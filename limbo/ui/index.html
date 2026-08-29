@@ -1,0 +1,351 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>LIMBO — unprotected vs protected</title>
+<!--
+  The split view. Two independent worlds, side by side, live.
+
+  Left  — the agent talking straight to a tool server. No staging layer, so
+          every effect it emits is already gone. Its inbox fills.
+  Right — the same agent, same prompt, one env var different, talking to Limbo.
+          Effects stack as cards awaiting judgment. Its inbox stays empty.
+
+  Each side has its own Mailpit pair and its own SQLite file, so neither can
+  contaminate the other and both can be on screen at the same moment. That is
+  the whole point of the frame.
+
+  Every Mailpit must be started with --api-cors "*" or these panes stay
+  permanently empty — and an empty protected inbox looks CORRECT, so this fails
+  in the most misleading way possible. Hence the per-pane offline notice.
+-->
+<style>
+  :root {
+    --bg:     #0d1117;
+    --panel:  #161b22;
+    --sunk:   #0b0f14;
+    --edge:   #30363d;
+    --text:   #e6edf3;
+    --dim:    #8b949e;
+    --faint:  #4d5560;
+    --hold:   #d29922;
+    --fail:   #f85149;
+    --pass:   #3fb950;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 ui-monospace, "Cascadia Code", Consolas, monospace;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 12px;
+    overflow: hidden;               /* the page never scrolls; panes do */
+  }
+
+  /* ------------------------------------------------------------- panes */
+  .pane {
+    display: grid; grid-template-rows: auto auto minmax(0, 1fr);
+    min-width: 0; min-height: 0;    /* let children shrink inside the grid */
+    border: 1px solid var(--edge); border-radius: 8px;
+    background: var(--panel); overflow: hidden;
+  }
+  .pane.unprotected { border-top: 3px solid var(--fail); }
+  .pane.protected   { border-top: 3px solid var(--pass); }
+
+  .head { padding: 12px 14px 10px; border-bottom: 1px solid var(--edge); }
+  .title {
+    display: flex; align-items: baseline; gap: 10px;
+    font-size: 20px; font-weight: 700; letter-spacing: 2px;
+  }
+  .unprotected .title { color: var(--fail); }
+  .protected   .title { color: var(--text); }
+  .env {
+    margin-left: auto; font-size: 11px; letter-spacing: 0; color: var(--dim);
+    border: 1px solid var(--edge); border-radius: 4px; padding: 2px 7px;
+    white-space: nowrap;
+  }
+  .sub { font-size: 12px; color: var(--dim); margin-top: 5px; }
+  .sub .n { font-size: 17px; font-weight: 700; color: var(--hold); }
+
+  /* --------------------------------------------------------- staging */
+  /* Staging takes what it needs; the inbox below gets the rest of the pane. */
+  .staging {
+    padding: 10px 14px; border-bottom: 1px solid var(--edge);
+    max-height: 52vh; overflow-y: auto;
+  }
+  .nolayer {
+    padding: 18px 14px; text-align: center; border-radius: 6px;
+    border: 1px dashed var(--edge); color: var(--faint);
+  }
+  .nolayer b { display: block; color: var(--dim); letter-spacing: 1px;
+               margin-bottom: 4px; }
+
+  .banner {
+    padding: 9px 12px; border-radius: 5px; background: var(--sunk);
+    border-left: 4px solid var(--dim); margin-bottom: 9px;
+  }
+  .banner .label { font-weight: 700; letter-spacing: 1px; font-size: 13px; }
+  .banner .detail { color: var(--dim); font-size: 12px; margin-top: 3px;
+                    white-space: normal; word-break: break-word; }
+  .banner.fail { border-left-color: var(--fail); }
+  .banner.fail .label { color: var(--fail); }
+  .banner.pass { border-left-color: var(--pass); }
+  .banner.pass .label { color: var(--pass); }
+
+  .card {
+    background: var(--sunk); border: 1px solid var(--edge);
+    border-left: 4px solid var(--hold); border-radius: 5px;
+    padding: 8px 11px; margin-bottom: 7px;
+    /* The purge is the payoff of beat 1 — without this the three cards just
+       blink out between polls. Short enough to still read as decisive. */
+    animation: in .18s ease-out;
+  }
+  .card.leaving { animation: out .3s ease-in forwards; }
+  @keyframes in  { from { opacity: 0; transform: translateY(-4px); } }
+  @keyframes out { to { opacity: 0; transform: translateX(14px); height: 0;
+                        margin: 0; padding-top: 0; padding-bottom: 0;
+                        border-width: 0; } }
+  .card.sent { border-left-color: var(--pass); }
+  .card .top { display: flex; align-items: center; gap: 8px; }
+  .tool { font-weight: 700; font-size: 14px; }
+  .badge {
+    margin-left: auto; font-size: 10px; font-weight: 700; letter-spacing: 1.2px;
+    padding: 2px 7px; border-radius: 3px; background: var(--hold); color: #0d1117;
+  }
+  .badge.sent { background: var(--pass); }
+  .card .target { font-size: 13px; margin-top: 4px; }
+  .card .detail { color: var(--dim); font-size: 12px; margin-top: 2px;
+                  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .verdictbox {
+    padding: 14px; text-align: center; border-radius: 6px; font-size: 13px;
+    border: 1px dashed var(--edge); color: var(--dim);
+  }
+  .verdictbox.discarded { border-style: solid; border-color: var(--fail);
+                          color: var(--fail); font-weight: 600; }
+  .verdictbox.committed { border-style: solid; border-color: var(--pass);
+                          color: var(--pass); font-weight: 600; }
+
+  .actions { display: flex; gap: 8px; margin-top: 9px; }
+  button {
+    flex: 1; padding: 10px 8px; border-radius: 5px; cursor: pointer;
+    font: 700 12px/1 ui-monospace, Consolas, monospace; letter-spacing: 1px;
+    border: 1px solid var(--edge); background: var(--sunk); color: var(--text);
+  }
+  .approve { background: var(--pass); border-color: var(--pass); color: #06210e; }
+  .approve:disabled { background: var(--sunk); border-color: var(--edge);
+                      color: var(--faint); cursor: not-allowed; }
+  .discard { color: var(--fail); border-color: var(--fail); }
+  .discard:disabled { color: var(--faint); border-color: var(--edge);
+                      cursor: not-allowed; }
+
+  /* ----------------------------------------------------------- inbox */
+  .inbox { display: grid; grid-template-rows: auto minmax(0, 1fr);
+           min-height: 0; }
+  .inboxhead {
+    display: flex; align-items: baseline; gap: 8px; padding: 9px 14px;
+    border-bottom: 1px solid var(--edge); background: var(--sunk);
+    font-size: 12px; letter-spacing: 1px; color: var(--dim);
+  }
+  .inboxhead .c { font-size: 15px; font-weight: 700; }
+  .unprotected .inboxhead .c { color: var(--fail); }
+  .protected   .inboxhead .c { color: var(--pass); }
+  .msgs { overflow-y: auto; padding: 8px 10px; }
+  .msg {
+    border-bottom: 1px solid var(--edge); padding: 8px 4px;
+    animation: in .2s ease-out;
+  }
+  .msg:last-child { border-bottom: 0; }
+  .msg .to { font-size: 12px; color: var(--dim); }
+  .msg .subj { font-weight: 700; font-size: 13px; margin: 2px 0; }
+  .msg .snip { font-size: 12px; color: var(--dim);
+               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .msg .box { font-size: 10px; color: var(--faint); letter-spacing: 1px; }
+
+  .nomail {
+    margin: 24px 10px; padding: 22px 14px; text-align: center;
+    border: 1px dashed var(--edge); border-radius: 6px; color: var(--faint);
+  }
+  .nomail b { display: block; color: var(--pass); letter-spacing: 1px;
+              font-size: 13px; margin-bottom: 5px; }
+  .unprotected .nomail b { color: var(--faint); }
+
+  .offline { color: var(--fail); font-size: 12px; padding: 6px 14px; }
+</style>
+
+<section class="pane unprotected" id="pane-u">
+  <div class="head">
+    <div class="title">UNPROTECTED <span class="env">MCP_URL=:9001</span></div>
+    <div class="sub">the agent talks straight to the tool server</div>
+  </div>
+  <div class="staging">
+    <div class="nolayer">
+      <b>NO STAGING LAYER</b>
+      effects go straight out — nothing to approve, nothing to undo
+    </div>
+  </div>
+  <div class="inbox">
+    <div class="inboxhead"><span class="c" id="u-count">0</span> DELIVERED</div>
+    <div class="msgs" id="u-msgs"></div>
+    <div class="offline" id="u-off"></div>
+  </div>
+</section>
+
+<section class="pane protected" id="pane-p">
+  <div class="head">
+    <div class="title">LIMBO <span class="env" id="p-attempt">ATTEMPT 1</span></div>
+    <div class="sub"><span class="n" id="p-held">0</span> actions awaiting judgment</div>
+  </div>
+  <div class="staging">
+    <div class="banner" id="p-banner">
+      <div class="label">PENDING</div>
+      <div class="detail">no verification yet</div>
+    </div>
+    <div id="p-cards"></div>
+    <div class="actions">
+      <button class="approve" id="p-approve" disabled>APPROVE &amp; COMMIT</button>
+      <button class="discard" id="p-discard" disabled>DISCARD</button>
+    </div>
+  </div>
+  <div class="inbox">
+    <div class="inboxhead"><span class="c" id="p-count">0</span> DELIVERED</div>
+    <div class="msgs" id="p-msgs"></div>
+    <div class="offline" id="p-off"></div>
+  </div>
+</section>
+
+<script>
+const LIMBO = "http://127.0.0.1:8080";
+// Each side's own Mailpit pair: [people inbox, channel inbox].
+const MAIL = {
+  u: ["http://localhost:8035", "http://localhost:8036"],
+  p: ["http://localhost:8025", "http://localhost:8026"],
+};
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g,
+  c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// The verdict detail arrives wrapped by MCP and the tool layer:
+//   "Error calling tool 'register_vendor': registry 422: Tax ID ... INACTIVE"
+// The registry's own sentence is what matters on screen, so strip the plumbing
+// in front of it. Falls back to the raw text if the shape ever changes.
+const reason = t => (String(t).match(/registry \d+:\s*(.+)/s) || [, t])[1].trim();
+
+// ---------------------------------------------------------------- inboxes
+
+async function inbox(side) {
+  const [people, channel] = MAIL[side];
+  const grab = async (base, box) => {
+    const r = await fetch(base + "/api/v1/messages?limit=50");
+    if (!r.ok) throw new Error(r.status);
+    return (await r.json()).messages.map(m => ({ ...m, box }));
+  };
+  const [a, b] = await Promise.all([grab(people, "inbox"), grab(channel, "#procurement")]);
+  return [...a, ...b].sort((x, y) => new Date(y.Created) - new Date(x.Created));
+}
+
+function renderInbox(side, msgs) {
+  $(side + "-count").textContent = msgs.length;
+  $(side + "-off").textContent = "";
+  if (!msgs.length) {
+    // On the protected side this emptiness IS the product, so say so.
+    $(side + "-msgs").innerHTML = side === "p"
+      ? `<div class="nomail"><b>NOTHING WAS SENT</b>
+           three effects are held, not delivered</div>`
+      : `<div class="nomail">no messages yet</div>`;
+    return;
+  }
+  $(side + "-msgs").innerHTML = msgs.map(m => `
+    <div class="msg">
+      <div class="to">${esc((m.To[0] || {}).Address || "")}
+        <span class="box">· ${esc(m.box)}</span></div>
+      <div class="subj">${esc(m.Subject)}</div>
+      <div class="snip">${esc(m.Snippet)}</div>
+    </div>`).join("");
+}
+
+// ------------------------------------------------------------ limbo pane
+
+const card = (h, sent) => `
+  <div class="card${sent ? " sent" : ""}" data-id="${esc(h.id ?? h.tool)}">
+    <div class="top">
+      <span class="tool">${esc(h.tool)}</span>
+      <span class="badge${sent ? " sent" : ""}">${sent ? "SENT" : "UNSENT"}</span>
+    </div>
+    <div class="target">${esc(h.target)}</div>
+    ${h.detail ? `<div class="detail">${esc(h.detail)}</div>` : ""}
+  </div>`;
+
+let lastHeldIds = "";
+
+function renderLimbo(s) {
+  $("p-off").textContent = "";
+  $("p-attempt").textContent = "ATTEMPT " + s.attempt;
+  $("p-held").textContent = s.count;
+
+  const b = $("p-banner"), v = s.verdict;
+  const failed = s.verdicts.find(x => !x.ok);
+  b.className = "banner" + (v === "fail" ? " fail" : v === "pass" ? " pass" : "");
+  b.querySelector(".label").textContent =
+    v === "fail" ? "VERIFICATION FAILED" : v === "pass" ? "VERIFIED" : "PENDING";
+  b.querySelector(".detail").textContent =
+    v === "fail" ? (failed ? reason(failed.detail) : "a tool call returned an error")
+    : v === "pass" ? "the registry accepted this vendor"
+    : "no verification yet";
+
+  const ids = s.held.map(h => h.id).join(",");
+  const box = $("p-cards");
+
+  if (s.count) {
+    if (ids !== lastHeldIds) box.innerHTML = s.held.map(h => card(h, false)).join("");
+  } else if (lastHeldIds && !box.querySelector(".leaving")) {
+    // Cards were there a moment ago and are gone now: play them out before
+    // swapping in the verdict box, so the purge is visible rather than a blink.
+    const outcome = s.outcome;
+    box.querySelectorAll(".card").forEach(c => c.classList.add("leaving"));
+    setTimeout(() => {
+      box.innerHTML = outcomeBox(outcome, s);
+    }, 300);
+  } else if (!box.querySelector(".leaving")) {
+    box.innerHTML = outcomeBox(s.outcome, s);
+  }
+  lastHeldIds = ids;
+
+  // The gate, mirrored. The server enforces it too — /commit returns 409 on
+  // any verdict but pass, so this is a convenience, not the control.
+  $("p-approve").disabled = !(v === "pass" && s.outcome === null && s.count > 0);
+  $("p-discard").disabled = !(s.outcome === null && s.count > 0);
+}
+
+function outcomeBox(outcome, s) {
+  if (outcome === "committed")
+    return `<div class="verdictbox committed">COMMITTED — ${s.flushed.length} effects delivered</div>`
+         + s.flushed.map(h => card(h, true)).join("");
+  if (outcome === "discarded")
+    return `<div class="verdictbox discarded">DISCARDED — rolled back, nothing left the building</div>`;
+  return `<div class="verdictbox">nothing in limbo</div>`;
+}
+
+// ------------------------------------------------------------------ poll
+
+async function poll() {
+  // Each source is independent: one dead process must not blank the others.
+  fetch(LIMBO + "/state").then(r => r.json()).then(renderLimbo).catch(() => {
+    $("p-off").textContent = "limbo unreachable on :8080";
+  });
+  for (const side of ["u", "p"]) {
+    inbox(side).then(m => renderInbox(side, m)).catch(() => {
+      $(side + "-off").textContent =
+        `mailpit unreachable (${MAIL[side].join(", ")}) — started with --api-cors "*"?`;
+    });
+  }
+}
+
+const act = path => async () => {
+  try { await fetch(LIMBO + path, { method: "POST" }); } catch (e) {}
+  poll();
+};
+$("p-approve").onclick = act("/commit");
+$("p-discard").onclick = act("/discard");
+
+poll();
+setInterval(poll, 500);
+</script>

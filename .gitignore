@@ -1,0 +1,10 @@
+.env
+bin/
+data/
+__pycache__/
+*.pyc
+*.db
+
+# working notes, not part of the product
+buildplan.md
+STATE.md

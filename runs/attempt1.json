@@ -1,0 +1,47 @@
+{
+  "label": "attempt1",
+  "model": "openai/gpt-oss-120b",
+  "vendor": "Acme Industrial Supply",
+  "tax_id": "ACME-88-4417",
+  "recorded": "2026-08-29 14:24:08",
+  "calls": [
+    {
+      "tool": "create_vendor",
+      "args": {
+        "contact": "onboarding@acme.com",
+        "name": "Acme Industrial Supply",
+        "tax_id": "ACME-88-4417"
+      }
+    },
+    {
+      "tool": "send_email",
+      "args": {
+        "body": "Welcome to our supplier portal! We are excited to have Acme Industrial Supply join us. Please follow the link to set up your account and start collaborating with us.",
+        "subject": "Vendor portal invitation",
+        "to": "onboarding@acme.com"
+      }
+    },
+    {
+      "tool": "send_email",
+      "args": {
+        "body": "Acme Industrial Supply has been onboarded and will be on Net 30 payment terms.",
+        "subject": "New vendor payment terms",
+        "to": "finance@company.com"
+      }
+    },
+    {
+      "tool": "post_channel",
+      "args": {
+        "channel": "#procurement",
+        "message": "Acme Industrial Supply is now an approved vendor."
+      }
+    },
+    {
+      "tool": "register_vendor",
+      "args": {
+        "name": "Acme Industrial Supply",
+        "tax_id": "ACME-88-4417"
+      }
+    }
+  ]
+}
