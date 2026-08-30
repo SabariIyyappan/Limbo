@@ -1,4 +1,6 @@
-# LIMBO
+<p align="center">
+  <img src="titlecard-main.jpg" alt="LIMBO — the afterlife for agent side effects" width="820">
+</p>
 
 ### `git commit` for agent actions
 
@@ -38,7 +40,8 @@ they never left the building.
 
 ## What you see
 
-Two independent worlds, side by side, live:
+An operator console. Connect an agent, pick a vendor, run it — first
+unprotected, then through Limbo — and watch every step land in real time.
 
 ```
         UNPROTECTED                       PROTECTED
@@ -48,8 +51,16 @@ Two independent worlds, side by side, live:
               |                                 |
         agent MCP_URL=:9001               agent MCP_URL=:8080
               |                                 |
-              \________ panel on :8081 ________/
+              \____ control :8090 ______________/
+                          |
+                    panel on :8081
 ```
+
+The two runs are the same frame, run twice. The left column is the **step
+ledger** — five effects on a spine, each carrying what the agent did *and* what
+Limbo decided about it (`FORWARDED`, `IN LIMBO`, `VERIFYING`, `DESTROYED
+UNSENT`). The right column is the world: what actually got delivered, how many
+rows are durable, and the previous run's damage kept on screen beside it.
 
 Same agent file. Same model. Same prompt. Same bug. **One environment variable.**
 
@@ -113,18 +124,29 @@ world safe. The only path out is a human approving a run that already passed.
 pip install langgraph langchain-groq langchain-mcp-adapters fastmcp fastapi uvicorn
 
 # Mailpit (standalone binary) goes in bin/, GROQ_API_KEY in .env
-scripts/demo.sh up        # starts all ten processes
+scripts/demo.sh up        # starts all eleven processes
 scripts/demo.sh ports     # confirms them
 ```
 
-Open **http://127.0.0.1:8081**, then:
+Open **http://127.0.0.1:8081** and drive it from the panel:
+
+| | Click | What happens |
+|---|---|---|
+| 1 | **+ CONNECT AGENT** → `vendor-ops` | the agent connects; controls unlock |
+| 2 | **RUN AGENT** | unprotected — steps travel 1→5, step 5 hits the 422. **3 delivered, 1 row** |
+| 3 | **PROTECT WITH LIMBO** | the staging layer arms; the ledger clears |
+| 4 | **RUN AGENT** | steps 2–4 tag `IN LIMBO`, step 5 fails, everything purges. **0 delivered, 0 rows** |
+| 5 | vendor → `ACME-88-4418`, **RUN AGENT** | verdict flips to `VERIFIED` |
+| 6 | **APPROVE & COMMIT** | the door: 3 effects delivered at once, 1 durable row |
+
+The same arc from a terminal, if you prefer it:
 
 ```bash
 scripts/demo.sh reset
-scripts/demo.sh unprotected   # left pane fills — 3 emails, already gone
-scripts/demo.sh protected     # right pane holds 3, hits the 422, purges itself
+scripts/demo.sh unprotected   # 3 emails, already gone
+scripts/demo.sh protected     # holds 3, hits the 422, purges itself
 scripts/demo.sh retry         # attempt 2, corrected tax ID → verdict passes
-# click APPROVE & COMMIT      # the door: 3 effects delivered at once
+scripts/demo.sh approve       # the door
 ```
 
 > Every Mailpit **must** be started with `--api-cors "*"` or the panel's inbox
@@ -153,7 +175,9 @@ scripts/demo.sh protected replay    # 0 tokens, every effect still real
 **Live:** every effect — SMTP, SQLite writes, the 422 from the registry,
 Limbo's hold / verify / commit / discard, the flush.
 
-Live is the default; replay is opt-in. A truncated run is never recorded.
+From the terminal, live is the default and replay is opt-in. The panel inverts
+that — it replays unless you flip **LIVE**, so a rehearsal costs no tokens. A
+truncated run is never recorded either way.
 
 ---
 
@@ -185,7 +209,8 @@ Groq `openai/gpt-oss-120b` · SQLite with explicit transaction control · Mailpi
 ```
 agent/run.py        the agent — Limbo-unaware, reads MCP_URL. Record & replay.
 limbo/server.py     the product — mirror, classifier, hold, verify, commit/discard
-limbo/ui/           the split-view panel (:8081)
+limbo/control.py    run controller (:8090) — spawns runs, publishes step state
+limbo/ui/           the operator console (:8081)
 world/tools.py      four real tools with real side effects — Limbo-unaware
 world/db.py         SQLite with the transaction held open across a run
 world/registry.py   the third-party system that rejects the tax ID

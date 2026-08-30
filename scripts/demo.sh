@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Drive a demo take end to end. Two worlds, side by side on :8081.
+# Drive a demo take end to end. The panel on :8081 can now drive it too — this
+# script stays as the terminal fallback if the UI misbehaves mid-demo.
 #
-#   scripts/demo.sh up           start all ten processes
+#   scripts/demo.sh up           start all eleven processes
 #   scripts/demo.sh reset        clean slate: both worlds, limbo, attempt=1
 #   scripts/demo.sh unprotected  agent -> :9001, no staging layer
 #   scripts/demo.sh protected    agent -> :8080 through Limbo (effects held)
@@ -50,6 +51,7 @@ up() {
     python world/tools.py  >/dev/null 2>&1 &                       # :9001 unprotected
   sleep 6
   python limbo/server.py   >/dev/null 2>&1 &                       # :8080
+  python limbo/control.py  >/dev/null 2>&1 &                       # :8090 run control
   python limbo/ui/serve.py >/dev/null 2>&1 &                       # :8081
   sleep 5
   ports
@@ -116,7 +118,7 @@ for f in d["forwarded"]: print("   FORWARD  %-14s (%s)" % (f["tool"], f["kind"])
 }
 
 ports() {
-  for p in 7000 8025 8026 8035 8036 8080 8081 9000 9001; do
+  for p in 7000 8025 8026 8035 8036 8080 8081 8090 9000 9001; do
     pid=$(netstat -ano | grep ":$p " | grep LISTEN | awk '{print $5}' | head -1)
     if [ -n "$pid" ]; then printf "  %-5s up (pid %s)\n" "$p" "$pid"
     else                   printf "  %-5s DOWN\n" "$p"; fi

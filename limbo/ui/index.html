@@ -1,222 +1,465 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>LIMBO — unprotected vs protected</title>
+<title>LIMBO — the afterlife for agent side effects</title>
 <!--
-  The split view. Two independent worlds, side by side, live.
+  The operator console. This is what the demo is driven from.
 
-  Left  — the agent talking straight to a tool server. No staging layer, so
-          every effect it emits is already gone. Its inbox fills.
-  Right — the same agent, same prompt, one env var different, talking to Limbo.
-          Effects stack as cards awaiting judgment. Its inbox stays empty.
+  Left  — the run. Connect an agent, pick a vendor, run it. Five steps travel
+          down a ledger spine; in protected mode each row also carries Limbo's
+          verdict on it (forwarded / in limbo / verifying), so what the proxy
+          decided is on screen next to what the agent did.
+  Right — the world. What actually reached it: delivered mail, durable rows,
+          and the previous run kept beside the current one so the contrast
+          between unprotected and protected is visible without a split screen.
 
-  Each side has its own Mailpit pair and its own SQLite file, so neither can
-  contaminate the other and both can be on screen at the same moment. That is
-  the whole point of the frame.
+  Three services back this page, each polled independently so one dead process
+  cannot blank the others:
+    :8090  the run controller  — steps, connect, run, protect, reset
+    :8080  limbo               — held effects, verdict, commit/discard
+    mailpit x4                 — what was actually delivered
 
   Every Mailpit must be started with --api-cors "*" or these panes stay
-  permanently empty — and an empty protected inbox looks CORRECT, so this fails
-  in the most misleading way possible. Hence the per-pane offline notice.
+  permanently empty — and an empty protected inbox looks CORRECT, so this
+  fails in the most misleading way possible. Hence the per-pane offline notice.
 -->
 <style>
   :root {
-    --bg:     #0d1117;
-    --panel:  #161b22;
-    --sunk:   #0b0f14;
-    --edge:   #30363d;
-    --text:   #e6edf3;
-    --dim:    #8b949e;
-    --faint:  #4d5560;
-    --hold:   #d29922;
-    --fail:   #f85149;
-    --pass:   #3fb950;
+    --void:   #08090a;   /* the ground */
+    --panel:  #0e1013;   /* one step up */
+    --raised: #14171c;   /* two steps up */
+    --line:   rgba(255,255,255,.09);
+    --line2:  rgba(255,255,255,.16);
+    --text:   #f2f4f7;
+    --dim:    #8b93a1;
+    --faint:  #565e6b;
+    --hold:   #e0a53a;   /* in limbo */
+    --pass:   #38d07f;   /* committed, verified, real */
+    --fail:   #f2544b;   /* void */
+    --mono: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+    --sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   body {
-    margin: 0; background: var(--bg); color: var(--text);
-    font: 14px/1.45 ui-monospace, "Cascadia Code", Consolas, monospace;
-    display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 12px;
-    overflow: hidden;               /* the page never scrolls; panes do */
+    margin: 0; background: var(--void); color: var(--text);
+    font: 13.5px/1.5 var(--sans); letter-spacing: -.011em;
+    overflow: hidden;
+    /* A very faint blueprint grid. Present enough to give the void a floor,
+       quiet enough that nothing on top of it has to fight. */
+    background-image:
+      linear-gradient(rgba(255,255,255,.014) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.014) 1px, transparent 1px);
+    background-size: 44px 44px;
   }
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-thumb { background: #23272e; border-radius: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
 
-  /* ------------------------------------------------------------- panes */
-  .pane {
-    display: grid; grid-template-rows: auto auto minmax(0, 1fr);
-    min-width: 0; min-height: 0;    /* let children shrink inside the grid */
-    border: 1px solid var(--edge); border-radius: 8px;
-    background: var(--panel); overflow: hidden;
-  }
-  .pane.unprotected { border-top: 3px solid var(--fail); }
-  .pane.protected   { border-top: 3px solid var(--pass); }
+  .shell { display: grid; grid-template-rows: auto minmax(0,1fr); height: 100%; }
 
-  .head { padding: 12px 14px 10px; border-bottom: 1px solid var(--edge); }
-  .title {
-    display: flex; align-items: baseline; gap: 10px;
-    font-size: 20px; font-weight: 700; letter-spacing: 2px;
+  /* ================================================================ topbar */
+  .topbar {
+    display: flex; align-items: center; gap: 14px;
+    padding: 13px 18px; border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, #0d0f12, var(--void));
   }
-  .unprotected .title { color: var(--fail); }
-  .protected   .title { color: var(--text); }
-  .env {
-    margin-left: auto; font-size: 11px; letter-spacing: 0; color: var(--dim);
-    border: 1px solid var(--edge); border-radius: 4px; padding: 2px 7px;
+  .brand { display: flex; align-items: baseline; gap: 10px; }
+  .brand .mark {
+    font: 700 19px/1 var(--mono); letter-spacing: 5px; color: var(--text);
+  }
+  .brand .tag {
+    font-size: 11.5px; color: var(--faint); letter-spacing: .01em;
+    padding-left: 11px; border-left: 1px solid var(--line);
+  }
+  .spacer { flex: 1; }
+
+  /* ------------------------------------------------------------- controls */
+  .ctl {
+    display: inline-flex; align-items: center; gap: 7px;
+    height: 34px; padding: 0 14px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--line2); background: var(--raised); color: var(--text);
+    font: 600 11.5px/1 var(--mono); letter-spacing: .09em;
+    transition: background .14s, border-color .14s, color .14s, opacity .14s;
     white-space: nowrap;
   }
-  .sub { font-size: 12px; color: var(--dim); margin-top: 5px; }
-  .sub .n { font-size: 17px; font-weight: 700; color: var(--hold); }
+  .ctl:hover:not(:disabled) { background: #1b1f26; border-color: rgba(255,255,255,.28); }
+  .ctl:disabled { opacity: .32; cursor: not-allowed; }
 
-  /* --------------------------------------------------------- staging */
-  /* Staging takes what it needs; the inbox below gets the rest of the pane. */
-  .staging {
-    padding: 10px 14px; border-bottom: 1px solid var(--edge);
-    max-height: 52vh; overflow-y: auto;
+  /* The connect button is the one green thing before anything has happened —
+     it is the only action available, so it should be the only one lit. */
+  .ctl.connect {
+    background: linear-gradient(180deg, #2fd47e, #21b466);
+    border-color: #34e089; color: #04180d;
+    box-shadow: 0 0 0 1px rgba(56,208,127,.16), 0 6px 20px -8px rgba(56,208,127,.6);
   }
-  .nolayer {
-    padding: 18px 14px; text-align: center; border-radius: 6px;
-    border: 1px dashed var(--edge); color: var(--faint);
+  .ctl.connect:hover:not(:disabled) {
+    background: linear-gradient(180deg, #45e08e, #26c471); border-color: #4deda0;
   }
-  .nolayer b { display: block; color: var(--dim); letter-spacing: 1px;
-               margin-bottom: 4px; }
+  .ctl.connect .plus { font-size: 15px; line-height: 0; margin-top: -1px; }
 
-  .banner {
-    padding: 9px 12px; border-radius: 5px; background: var(--sunk);
-    border-left: 4px solid var(--dim); margin-bottom: 9px;
-  }
-  .banner .label { font-weight: 700; letter-spacing: 1px; font-size: 13px; }
-  .banner .detail { color: var(--dim); font-size: 12px; margin-top: 3px;
-                    white-space: normal; word-break: break-word; }
-  .banner.fail { border-left-color: var(--fail); }
-  .banner.fail .label { color: var(--fail); }
-  .banner.pass { border-left-color: var(--pass); }
-  .banner.pass .label { color: var(--pass); }
+  .ctl.run { border-color: rgba(255,255,255,.3); }
+  .ctl.run:not(:disabled) { background: #1c2129; }
 
-  .card {
-    background: var(--sunk); border: 1px solid var(--edge);
-    border-left: 4px solid var(--hold); border-radius: 5px;
-    padding: 8px 11px; margin-bottom: 7px;
-    /* The purge is the payoff of beat 1 — without this the three cards just
-       blink out between polls. Short enough to still read as decisive. */
-    animation: in .18s ease-out;
+  /* Protect is a state, not a click — when armed it stays lit. */
+  .ctl.shield[data-on="1"] {
+    background: rgba(56,208,127,.1); border-color: rgba(56,208,127,.55);
+    color: var(--pass);
+    box-shadow: inset 0 0 22px -12px var(--pass), 0 0 0 1px rgba(56,208,127,.1);
   }
-  .card.leaving { animation: out .3s ease-in forwards; }
-  @keyframes in  { from { opacity: 0; transform: translateY(-4px); } }
-  @keyframes out { to { opacity: 0; transform: translateX(14px); height: 0;
-                        margin: 0; padding-top: 0; padding-bottom: 0;
-                        border-width: 0; } }
-  .card.sent { border-left-color: var(--pass); }
-  .card .top { display: flex; align-items: center; gap: 8px; }
-  .tool { font-weight: 700; font-size: 14px; }
-  .badge {
-    margin-left: auto; font-size: 10px; font-weight: 700; letter-spacing: 1.2px;
-    padding: 2px 7px; border-radius: 3px; background: var(--hold); color: #0d1117;
-  }
-  .badge.sent { background: var(--pass); }
-  .card .target { font-size: 13px; margin-top: 4px; }
-  .card .detail { color: var(--dim); font-size: 12px; margin-top: 2px;
-                  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-  .verdictbox {
-    padding: 14px; text-align: center; border-radius: 6px; font-size: 13px;
-    border: 1px dashed var(--edge); color: var(--dim);
+  select.ctl {
+    appearance: none; padding-right: 30px; font-family: var(--mono);
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--dim) 50%),
+      linear-gradient(135deg, var(--dim) 50%, transparent 50%);
+    background-position: calc(100% - 15px) 15px, calc(100% - 10px) 15px;
+    background-size: 5px 5px, 5px 5px; background-repeat: no-repeat;
   }
-  .verdictbox.discarded { border-style: solid; border-color: var(--fail);
-                          color: var(--fail); font-weight: 600; }
-  .verdictbox.committed { border-style: solid; border-color: var(--pass);
-                          color: var(--pass); font-weight: 600; }
+  select.ctl option { background: #14171c; color: var(--text); }
 
-  .actions { display: flex; gap: 8px; margin-top: 9px; }
-  button {
-    flex: 1; padding: 10px 8px; border-radius: 5px; cursor: pointer;
-    font: 700 12px/1 ui-monospace, Consolas, monospace; letter-spacing: 1px;
-    border: 1px solid var(--edge); background: var(--sunk); color: var(--text);
+  .chip {
+    display: inline-flex; align-items: center; gap: 9px;
+    height: 34px; padding: 0 13px; border-radius: 8px;
+    border: 1px solid rgba(56,208,127,.4); background: rgba(56,208,127,.07);
+    font: 600 11.5px/1 var(--mono); color: var(--pass); letter-spacing: .06em;
   }
-  .approve { background: var(--pass); border-color: var(--pass); color: #06210e; }
-  .approve:disabled { background: var(--sunk); border-color: var(--edge);
-                      color: var(--faint); cursor: not-allowed; }
-  .discard { color: var(--fail); border-color: var(--fail); }
-  .discard:disabled { color: var(--faint); border-color: var(--edge);
-                      cursor: not-allowed; }
+  .chip .dot {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--pass);
+    box-shadow: 0 0 9px var(--pass); animation: pulse 2.4s ease-in-out infinite;
+  }
+  .chip .meta { color: var(--faint); letter-spacing: .02em; font-weight: 500; }
+  @keyframes pulse { 50% { opacity: .35; } }
 
-  /* ----------------------------------------------------------- inbox */
-  .inbox { display: grid; grid-template-rows: auto minmax(0, 1fr);
-           min-height: 0; }
-  .inboxhead {
-    display: flex; align-items: baseline; gap: 8px; padding: 9px 14px;
-    border-bottom: 1px solid var(--edge); background: var(--sunk);
-    font-size: 12px; letter-spacing: 1px; color: var(--dim);
+  /* The LIVE switch. Off is the safe default: replay costs no tokens and
+     every effect is still real. */
+  .live {
+    display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+    font: 600 10.5px/1 var(--mono); letter-spacing: .11em; color: var(--faint);
+    user-select: none;
   }
-  .inboxhead .c { font-size: 15px; font-weight: 700; }
-  .unprotected .inboxhead .c { color: var(--fail); }
-  .protected   .inboxhead .c { color: var(--pass); }
-  .msgs { overflow-y: auto; padding: 8px 10px; }
+  .live .track {
+    width: 32px; height: 17px; border-radius: 9px; background: #1b1f26;
+    border: 1px solid var(--line2); position: relative; transition: .18s;
+  }
+  .live .track::after {
+    content: ""; position: absolute; top: 2px; left: 2px;
+    width: 11px; height: 11px; border-radius: 50%; background: var(--faint);
+    transition: .18s;
+  }
+  .live[data-on="1"] { color: var(--hold); }
+  .live[data-on="1"] .track { background: rgba(224,165,58,.2); border-color: var(--hold); }
+  .live[data-on="1"] .track::after { left: 17px; background: var(--hold); }
+
+  /* --------------------------------------------------------- agent picker */
+  .picker { position: relative; }
+  .menu {
+    position: absolute; top: 42px; left: 0; z-index: 40; min-width: 320px;
+    background: #12151a; border: 1px solid var(--line2); border-radius: 10px;
+    box-shadow: 0 20px 50px -12px rgba(0,0,0,.9); overflow: hidden;
+    animation: drop .14s ease-out;
+  }
+  @keyframes drop { from { opacity: 0; transform: translateY(-6px); } }
+  .menu .hd {
+    padding: 9px 14px; border-bottom: 1px solid var(--line);
+    font: 600 10px/1 var(--mono); letter-spacing: .14em; color: var(--faint);
+  }
+  .menu .item { padding: 12px 14px; cursor: pointer; transition: background .12s; }
+  .menu .item:hover { background: #1a1e25; }
+  .menu .item .nm { font: 600 13px var(--mono); color: var(--text); }
+  .menu .item .sub { font-size: 11.5px; color: var(--dim); margin-top: 3px; }
+  .menu .item .tools {
+    font: 500 10.5px var(--mono); color: var(--faint); margin-top: 6px;
+    letter-spacing: .02em;
+  }
+
+  /* ================================================================= body */
+  .cols {
+    display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(0, 1fr);
+    gap: 1px; background: var(--line); min-height: 0;
+  }
+  .col { background: var(--void); overflow-y: auto; padding: 18px 20px 26px; min-width: 0; }
+
+  .secttl {
+    display: flex; align-items: center; gap: 10px; margin: 0 0 14px;
+    font: 600 10.5px/1 var(--mono); letter-spacing: .16em; color: var(--faint);
+  }
+  .secttl::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+  .secttl .n { color: var(--dim); }
+
+  /* --------------------------------------------------------- empty state */
+  .empty {
+    margin-top: 14vh; text-align: center; color: var(--faint);
+    padding: 0 22px;
+  }
+  .empty .big {
+    font: 700 15px/1.5 var(--mono); letter-spacing: .05em; color: var(--dim);
+    margin-bottom: 9px;
+  }
+  .empty .sm { font-size: 12.5px; line-height: 1.7; max-width: 42ch; margin: 0 auto; }
+
+  /* =============================================================== ledger */
+  /* The spine. Each step hangs off it; in protected mode it is the thing the
+     held effects are strung on, which is why it only lights up then. */
+  .ledger { position: relative; padding-left: 27px; }
+  .ledger::before {
+    content: ""; position: absolute; left: 8px; top: 9px; bottom: 9px; width: 1px;
+    background: linear-gradient(180deg, transparent, var(--line2) 8%,
+                                var(--line2) 92%, transparent);
+  }
+  .protected .ledger::before {
+    background: linear-gradient(180deg, transparent, rgba(224,165,58,.5) 8%,
+                                rgba(224,165,58,.5) 92%, transparent);
+  }
+
+  .step {
+    position: relative; margin-bottom: 8px; padding: 10px 13px;
+    border: 1px solid var(--line); border-radius: 9px; background: var(--panel);
+    transition: border-color .2s, background .2s, opacity .2s;
+    animation: in .22s ease-out;
+  }
+  @keyframes in { from { opacity: 0; transform: translateY(-5px); } }
+
+  /* The node on the spine. Its colour is the step's whole status at a glance. */
+  .step::before {
+    content: ""; position: absolute; left: -23px; top: 15px;
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--void); border: 1.5px solid var(--faint);
+    transition: .2s;
+  }
+  .step.pending { opacity: .42; }
+  .step.running {
+    border-color: rgba(224,165,58,.5); background: #14140f;
+    box-shadow: 0 0 0 1px rgba(224,165,58,.12), 0 8px 26px -14px var(--hold);
+  }
+  .step.running::before {
+    border-color: var(--hold); background: var(--hold);
+    box-shadow: 0 0 12px var(--hold); animation: pulse 1.1s ease-in-out infinite;
+  }
+  /* A completed step settles back to neutral and keeps only its node green.
+     Colour is for what needs attention — if every finished row stays lit, the
+     one row that matters has nothing to stand out against. */
+  .step.ok { border-color: var(--line); }
+  .step.ok::before { border-color: var(--pass); background: var(--pass); }
+  .step.ok .out { color: var(--faint); }
+  .step.fail {
+    border-color: rgba(242,84,75,.55); background: #170f0f;
+    box-shadow: 0 0 0 1px rgba(242,84,75,.1);
+  }
+  .step.fail::before {
+    border-color: var(--fail); background: var(--fail);
+    box-shadow: 0 0 13px var(--fail);
+  }
+  .step.skipped { opacity: .3; }
+  .step.skipped::before { border-style: dashed; }
+
+  /* Agent got a receipt; Limbo destroyed the effect. Struck through, hollow
+     node — the step happened, its consequence did not. */
+  .step.voided { opacity: .5; }
+  .step.voided::before { background: var(--void); border-color: var(--fail); }
+  .step.voided .tool { text-decoration: line-through;
+                       text-decoration-color: rgba(242,84,75,.7); }
+  .step.voided .out { text-decoration: line-through;
+                      text-decoration-color: rgba(255,255,255,.25); }
+
+  .step .row1 { display: flex; align-items: center; gap: 9px; }
+  .step .idx {
+    font: 600 10px/1 var(--mono); color: var(--faint); letter-spacing: .05em;
+    min-width: 15px;
+  }
+  .step .tool { font: 600 13.5px var(--mono); letter-spacing: -.01em; }
+  .step.fail .tool { color: var(--fail); }
+  .step .tgt {
+    font-size: 12px; color: var(--dim); margin: 3px 0 0 24px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .step .out {
+    font: 11.5px/1.55 var(--mono); color: var(--faint);
+    margin: 6px 0 0 24px; word-break: break-word;
+  }
+  .step.fail .out {
+    color: #ffb3ad; background: rgba(242,84,75,.08); border-radius: 6px;
+    border-left: 2px solid var(--fail); padding: 7px 10px; margin-left: 24px;
+  }
+
+  /* Limbo's own verdict on the step, beside the agent's. */
+  .tagr { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+  .tag {
+    font: 600 9.5px/1 var(--mono); letter-spacing: .12em;
+    padding: 4px 7px; border-radius: 4px; border: 1px solid var(--line2);
+    color: var(--faint); white-space: nowrap;
+  }
+  .tag.held { color: var(--hold); border-color: rgba(224,165,58,.45);
+              background: rgba(224,165,58,.09); }
+  .tag.fwd  { color: var(--dim); }
+  .tag.ver  { color: #8ab4ff; border-color: rgba(138,180,255,.4);
+              background: rgba(138,180,255,.08); }
+  .tag.sent { color: var(--pass); border-color: rgba(56,208,127,.45);
+              background: rgba(56,208,127,.09); }
+  .tag.gone { color: var(--fail); border-color: rgba(242,84,75,.45);
+              background: rgba(242,84,75,.09); }
+
+  /* ================================================================= gate */
+  /* The one place gloss is allowed. It is the moment the run is judged. */
+  .gate {
+    margin-top: 20px; border-radius: 12px; border: 1px solid var(--line2);
+    background: linear-gradient(180deg, var(--raised), var(--panel));
+    overflow: hidden; position: relative;
+  }
+  .gate::after {
+    content: ""; position: absolute; inset: 0 0 auto; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--line2), transparent);
+  }
+  .gate .body { padding: 15px 17px; }
+  .gate .label {
+    font: 700 12px/1 var(--mono); letter-spacing: .16em; display: flex;
+    align-items: center; gap: 9px;
+  }
+  .gate .detail { font-size: 12.5px; color: var(--dim); margin-top: 8px;
+                  line-height: 1.6; }
+  .gate .count { margin-left: auto; font: 600 10.5px var(--mono);
+                 letter-spacing: .1em; color: var(--faint); }
+
+  .gate.pending .label { color: var(--dim); }
+  .gate.fail {
+    border-color: rgba(242,84,75,.5);
+    background: linear-gradient(180deg, rgba(242,84,75,.12), var(--panel));
+    box-shadow: 0 0 42px -16px var(--fail);
+  }
+  .gate.fail .label { color: var(--fail); }
+  .gate.pass {
+    border-color: rgba(56,208,127,.5);
+    background: linear-gradient(180deg, rgba(56,208,127,.12), var(--panel));
+    box-shadow: 0 0 42px -16px var(--pass);
+  }
+  .gate.pass .label { color: var(--pass); }
+  .gate.committed { border-color: rgba(56,208,127,.65); }
+  .gate.discarded { border-color: rgba(242,84,75,.45); }
+
+  .gate .spent {
+    padding: 11px 17px 15px; font: 11px var(--mono); letter-spacing: .08em;
+    color: var(--faint); border-top: 1px solid var(--line);
+    margin-top: 3px;
+  }
+  .gate .acts { display: flex; gap: 9px; padding: 0 17px 15px; }
+  .gate .acts .ctl { flex: 1; justify-content: center; height: 38px; }
+  .approve:not(:disabled) {
+    background: linear-gradient(180deg, #2fd47e, #21b466);
+    border-color: #34e089; color: #04180d;
+    box-shadow: 0 8px 26px -12px rgba(56,208,127,.85);
+  }
+  .discard:not(:disabled) { color: var(--fail); border-color: rgba(242,84,75,.5); }
+
+  /* ================================================================ world */
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-bottom: 20px; }
+  .stat {
+    padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px;
+    background: var(--panel);
+  }
+  .stat .k {
+    font: 600 9.5px/1 var(--mono); letter-spacing: .13em; color: var(--faint);
+  }
+  .stat .v {
+    font: 700 27px/1.1 var(--mono); margin-top: 9px; letter-spacing: -.02em;
+  }
+  .stat .u { font-size: 11px; color: var(--faint); margin-top: 3px; }
+  .stat.good .v { color: var(--pass); }
+  .stat.bad  .v { color: var(--fail); }
+  .stat.zero .v { color: var(--pass); }
+
   .msg {
-    border-bottom: 1px solid var(--edge); padding: 8px 4px;
-    animation: in .2s ease-out;
+    border: 1px solid var(--line); border-radius: 9px; background: var(--panel);
+    padding: 10px 13px; margin-bottom: 7px; animation: in .22s ease-out;
   }
-  .msg:last-child { border-bottom: 0; }
-  .msg .to { font-size: 12px; color: var(--dim); }
-  .msg .subj { font-weight: 700; font-size: 13px; margin: 2px 0; }
-  .msg .snip { font-size: 12px; color: var(--dim);
+  .msg .to { font: 11.5px var(--mono); color: var(--dim); display: flex; gap: 7px; }
+  .msg .to .box { color: var(--faint); }
+  .msg .subj { font-weight: 600; font-size: 13px; margin: 4px 0 2px; }
+  .msg .snip { font-size: 11.5px; color: var(--faint); line-height: 1.55;
                overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .msg .box { font-size: 10px; color: var(--faint); letter-spacing: 1px; }
 
   .nomail {
-    margin: 24px 10px; padding: 22px 14px; text-align: center;
-    border: 1px dashed var(--edge); border-radius: 6px; color: var(--faint);
+    padding: 26px 18px; text-align: center; border: 1px dashed var(--line2);
+    border-radius: 10px; color: var(--faint); font-size: 12.5px; line-height: 1.7;
   }
-  .nomail b { display: block; color: var(--pass); letter-spacing: 1px;
-              font-size: 13px; margin-bottom: 5px; }
-  .unprotected .nomail b { color: var(--faint); }
+  .nomail b {
+    display: block; font: 700 12.5px/1 var(--mono); letter-spacing: .12em;
+    color: var(--pass); margin-bottom: 8px;
+  }
+  .nomail.plain b { color: var(--faint); }
 
-  .offline { color: var(--fail); font-size: 12px; padding: 6px 14px; }
+  /* The previous run, kept beside the current one. The whole comparison. */
+  .prev {
+    border: 1px solid var(--line); border-left: 2px solid var(--faint);
+    border-radius: 9px; background: rgba(255,255,255,.014);
+    padding: 12px 14px; margin-bottom: 20px;
+  }
+  .prev.unprotected { border-left-color: var(--fail); }
+  .prev.protected { border-left-color: var(--pass); }
+  .prev .hd {
+    display: flex; align-items: center; gap: 9px;
+    font: 600 10px/1 var(--mono); letter-spacing: .13em; color: var(--faint);
+  }
+  .prev .hd .who { color: var(--dim); }
+  .prev .line {
+    font: 11.5px/1.7 var(--mono); color: var(--dim); margin-top: 8px;
+  }
+  .prev .line .x { color: var(--fail); font-weight: 600; }
+  .prev .line .c { color: var(--pass); font-weight: 600; }
+  .prev .line .q { color: var(--faint); }
+  .prev .line.note {
+    font-family: var(--sans); font-size: 12px; color: var(--faint);
+    line-height: 1.6; margin-top: 6px;
+  }
+
+  /* Line-height and max-height are kept in exact whole-line proportion
+     (19px x 11) so the pane never scrolls to a half-clipped row. */
+  .out {
+    font: 11.5px/19px var(--mono); color: var(--dim); white-space: pre-wrap;
+    word-break: break-word; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 9px; padding: 12px 14px; max-height: 233px; overflow-y: auto;
+  }
+  .offline {
+    color: var(--fail); font: 11.5px/1.6 var(--mono); padding: 9px 12px;
+    border: 1px solid rgba(242,84,75,.3); border-radius: 8px;
+    background: rgba(242,84,75,.06); margin-bottom: 9px;
+  }
 </style>
 
-<section class="pane unprotected" id="pane-u">
-  <div class="head">
-    <div class="title">UNPROTECTED <span class="env">MCP_URL=:9001</span></div>
-    <div class="sub">the agent talks straight to the tool server</div>
-  </div>
-  <div class="staging">
-    <div class="nolayer">
-      <b>NO STAGING LAYER</b>
-      effects go straight out — nothing to approve, nothing to undo
+<div class="shell" id="shell">
+  <div class="topbar">
+    <div class="brand">
+      <span class="mark">LIMBO</span>
+      <span class="tag">the afterlife for agent side effects</span>
     </div>
-  </div>
-  <div class="inbox">
-    <div class="inboxhead"><span class="c" id="u-count">0</span> DELIVERED</div>
-    <div class="msgs" id="u-msgs"></div>
-    <div class="offline" id="u-off"></div>
-  </div>
-</section>
+    <div class="spacer"></div>
 
-<section class="pane protected" id="pane-p">
-  <div class="head">
-    <div class="title">LIMBO <span class="env" id="p-attempt">ATTEMPT 1</span></div>
-    <div class="sub"><span class="n" id="p-held">0</span> actions awaiting judgment</div>
-  </div>
-  <div class="staging">
-    <div class="banner" id="p-banner">
-      <div class="label">PENDING</div>
-      <div class="detail">no verification yet</div>
+    <div class="picker" id="picker">
+      <button class="ctl connect" id="connect">
+        <span class="plus">+</span> CONNECT AGENT
+      </button>
+      <div class="menu" id="menu" hidden></div>
     </div>
-    <div id="p-cards"></div>
-    <div class="actions">
-      <button class="approve" id="p-approve" disabled>APPROVE &amp; COMMIT</button>
-      <button class="discard" id="p-discard" disabled>DISCARD</button>
-    </div>
+    <span id="chipwrap" hidden></span>
+
+    <select class="ctl" id="vendor" disabled></select>
+    <button class="ctl shield" id="protect" data-on="0" disabled>PROTECT WITH LIMBO</button>
+    <button class="ctl run" id="run" disabled>RUN AGENT</button>
+    <div class="live" id="live" data-on="0"><span class="track"></span>LIVE</div>
+    <button class="ctl" id="reset">RESET</button>
   </div>
-  <div class="inbox">
-    <div class="inboxhead"><span class="c" id="p-count">0</span> DELIVERED</div>
-    <div class="msgs" id="p-msgs"></div>
-    <div class="offline" id="p-off"></div>
+
+  <div class="cols">
+    <div class="col" id="left"></div>
+    <div class="col" id="right"></div>
   </div>
-</section>
+</div>
 
 <script>
+const CTL = "http://127.0.0.1:8090";
 const LIMBO = "http://127.0.0.1:8080";
-// Each side's own Mailpit pair: [people inbox, channel inbox].
+// Each world's own Mailpit pair: [people inbox, channel inbox].
 const MAIL = {
-  u: ["http://localhost:8035", "http://localhost:8036"],
-  p: ["http://localhost:8025", "http://localhost:8026"],
+  unprotected: ["http://localhost:8035", "http://localhost:8036"],
+  protected:   ["http://localhost:8025", "http://localhost:8026"],
 };
 
 const $ = id => document.getElementById(id);
@@ -229,123 +472,381 @@ const esc = s => String(s ?? "").replace(/[&<>"]/g,
 // in front of it. Falls back to the raw text if the shape ever changes.
 const reason = t => (String(t).match(/registry \d+:\s*(.+)/s) || [, t])[1].trim();
 
-// ---------------------------------------------------------------- inboxes
+// Limbo classifies by tool name; mirroring the map here lets a step show what
+// WILL happen to it before it has happened. The server is still the authority —
+// once a call goes through, the tag comes from /state, not from this.
+const CLASS = { create_vendor: "internal", register_vendor: "verify" };
+
+let cfg = { agents: [], vendors: [] };
+let ctl = null, limbo = null, worlds = null;
+let mail = { unprotected: [], protected: [] };
+let mailErr = { unprotected: "", protected: "" };
+let live = false, busy = false;
+
+// ------------------------------------------------------------------ setup
+
+async function boot() {
+  try {
+    cfg = await (await fetch(CTL + "/config")).json();
+  } catch (e) {
+    $("left").innerHTML = `<div class="offline">run controller unreachable on
+      :8090 — start it with <b>python limbo/control.py</b></div>`;
+    return;
+  }
+  $("vendor").innerHTML = cfg.vendors.map(v =>
+    `<option value="${esc(v.id)}">${esc(v.tax_id)}${v.flag ? " · " + esc(v.flag) : ""}</option>`
+  ).join("");
+  $("menu").innerHTML =
+    `<div class="hd">AVAILABLE AGENTS</div>` +
+    cfg.agents.map(a => `
+      <div class="item" data-id="${esc(a.id)}">
+        <div class="nm">${esc(a.name)}</div>
+        <div class="sub">${esc(a.framework)} · ${esc(a.model)}</div>
+        <div class="tools">${a.tools.map(esc).join("  ·  ")}</div>
+      </div>`).join("");
+  $("menu").querySelectorAll(".item").forEach(el => {
+    el.onclick = () => connect(el.dataset.id);
+  });
+  poll();
+  setInterval(poll, 500);
+}
+
+// ------------------------------------------------------------------ polls
+
+async function poll() {
+  fetch(CTL + "/state").then(r => r.json()).then(s => { ctl = s; }).catch(() => {});
+  fetch(CTL + "/worlds").then(r => r.json()).then(w => { worlds = w; }).catch(() => {});
+  fetch(LIMBO + "/state").then(r => r.json()).then(s => { limbo = s; })
+    .catch(() => { limbo = null; });
+
+  const side = (ctl && ctl.protected) ? "protected" : "unprotected";
+  inbox(side).then(m => { mail[side] = m; mailErr[side] = ""; }).catch(() => {
+    mailErr[side] = `mailpit unreachable (${MAIL[side].join(", ")}) — ` +
+                    `started with --api-cors "*"?`;
+  });
+  render();
+}
 
 async function inbox(side) {
-  const [people, channel] = MAIL[side];
   const grab = async (base, box) => {
     const r = await fetch(base + "/api/v1/messages?limit=50");
     if (!r.ok) throw new Error(r.status);
     return (await r.json()).messages.map(m => ({ ...m, box }));
   };
-  const [a, b] = await Promise.all([grab(people, "inbox"), grab(channel, "#procurement")]);
+  const [a, b] = await Promise.all([
+    grab(MAIL[side][0], "inbox"), grab(MAIL[side][1], "#procurement"),
+  ]);
   return [...a, ...b].sort((x, y) => new Date(y.Created) - new Date(x.Created));
 }
 
-function renderInbox(side, msgs) {
-  $(side + "-count").textContent = msgs.length;
-  $(side + "-off").textContent = "";
-  if (!msgs.length) {
-    // On the protected side this emptiness IS the product, so say so.
-    $(side + "-msgs").innerHTML = side === "p"
-      ? `<div class="nomail"><b>NOTHING WAS SENT</b>
-           three effects are held, not delivered</div>`
-      : `<div class="nomail">no messages yet</div>`;
+// ------------------------------------------------------------------ render
+
+function render() {
+  if (!ctl) return;
+  const on = !!ctl.protected, running = !!ctl.running;
+  $("shell").className = "shell" + (on ? " protected" : "");
+
+  // Connected? The connect button becomes a chip; everything else unlocks.
+  const a = ctl.agent;
+  $("connect").hidden = !!a;
+  $("picker").hidden = !!a;
+  $("chipwrap").hidden = !a;
+  if (a) {
+    $("chipwrap").innerHTML =
+      `<span class="chip"><span class="dot"></span>${esc(a.name)}
+        <span class="meta">${a.tools.length} TOOLS · ${esc(a.model)}</span></span>`;
+  }
+  $("vendor").disabled = !a || running;
+  $("protect").disabled = !a || running;
+  $("run").disabled = !a || running || busy;
+  $("reset").disabled = running;
+  $("protect").dataset.on = on ? "1" : "0";
+  $("run").textContent = running ? "RUNNING…" : "RUN AGENT";
+  $("live").dataset.on = live ? "1" : "0";
+
+  renderLeft(on);
+  renderRight(on);
+}
+
+// ------------------------------------------------------------------- left
+
+function renderLeft(on) {
+  const L = $("left");
+  if (!ctl.agent) {
+    L.innerHTML = `
+      <div class="empty">
+        <div class="big">NO AGENT CONNECTED</div>
+        <div class="sm">Connect an agent to begin. Limbo sits in front of its
+          tool server as a transparent MCP proxy — the agent sees the same tools
+          it always did and never learns it was intercepted.</div>
+      </div>`;
     return;
   }
-  $(side + "-msgs").innerHTML = msgs.map(m => `
-    <div class="msg">
-      <div class="to">${esc((m.To[0] || {}).Address || "")}
-        <span class="box">· ${esc(m.box)}</span></div>
-      <div class="subj">${esc(m.Subject)}</div>
-      <div class="snip">${esc(m.Snippet)}</div>
-    </div>`).join("");
-}
-
-// ------------------------------------------------------------ limbo pane
-
-const card = (h, sent) => `
-  <div class="card${sent ? " sent" : ""}" data-id="${esc(h.id ?? h.tool)}">
-    <div class="top">
-      <span class="tool">${esc(h.tool)}</span>
-      <span class="badge${sent ? " sent" : ""}">${sent ? "SENT" : "UNSENT"}</span>
-    </div>
-    <div class="target">${esc(h.target)}</div>
-    ${h.detail ? `<div class="detail">${esc(h.detail)}</div>` : ""}
-  </div>`;
-
-let lastHeldIds = "";
-
-function renderLimbo(s) {
-  $("p-off").textContent = "";
-  $("p-attempt").textContent = "ATTEMPT " + s.attempt;
-  $("p-held").textContent = s.count;
-
-  const b = $("p-banner"), v = s.verdict;
-  const failed = s.verdicts.find(x => !x.ok);
-  b.className = "banner" + (v === "fail" ? " fail" : v === "pass" ? " pass" : "");
-  b.querySelector(".label").textContent =
-    v === "fail" ? "VERIFICATION FAILED" : v === "pass" ? "VERIFIED" : "PENDING";
-  b.querySelector(".detail").textContent =
-    v === "fail" ? (failed ? reason(failed.detail) : "a tool call returned an error")
-    : v === "pass" ? "the registry accepted this vendor"
-    : "no verification yet";
-
-  const ids = s.held.map(h => h.id).join(",");
-  const box = $("p-cards");
-
-  if (s.count) {
-    if (ids !== lastHeldIds) box.innerHTML = s.held.map(h => card(h, false)).join("");
-  } else if (lastHeldIds && !box.querySelector(".leaving")) {
-    // Cards were there a moment ago and are gone now: play them out before
-    // swapping in the verdict box, so the purge is visible rather than a blink.
-    const outcome = s.outcome;
-    box.querySelectorAll(".card").forEach(c => c.classList.add("leaving"));
-    setTimeout(() => {
-      box.innerHTML = outcomeBox(outcome, s);
-    }, 300);
-  } else if (!box.querySelector(".leaving")) {
-    box.innerHTML = outcomeBox(s.outcome, s);
+  if (!ctl.steps.length) {
+    L.innerHTML = `
+      <div class="empty">
+        <div class="big">${on ? "STAGING LAYER ARMED" : "READY — UNPROTECTED"}</div>
+        <div class="sm">${on
+          ? "Every irreversible effect this run emits will be held here instead of leaving the building. Run the agent."
+          : "The agent will talk straight to the tool server. Nothing is staged, so every effect it emits is already gone. Run the agent."}</div>
+      </div>`;
+    return;
   }
-  lastHeldIds = ids;
 
-  // The gate, mirrored. The server enforces it too — /commit returns 409 on
-  // any verdict but pass, so this is a convenience, not the control.
-  $("p-approve").disabled = !(v === "pass" && s.outcome === null && s.count > 0);
-  $("p-discard").disabled = !(s.outcome === null && s.count > 0);
+  const html = ctl.steps.map(s => step(s, on)).join("");
+  L.innerHTML =
+    `<div class="secttl">${on ? "PROTECTED RUN" : "UNPROTECTED RUN"}
+       <span class="n">${esc(runTax())}</span></div>
+     <div class="ledger">${html}</div>` + (on ? gate() : "");
 }
 
-function outcomeBox(outcome, s) {
-  if (outcome === "committed")
-    return `<div class="verdictbox committed">COMMITTED — ${s.flushed.length} effects delivered</div>`
-         + s.flushed.map(h => card(h, true)).join("");
-  if (outcome === "discarded")
-    return `<div class="verdictbox discarded">DISCARDED — rolled back, nothing left the building</div>`;
-  return `<div class="verdictbox">nothing in limbo</div>`;
+// The tax ID the RUN used, not whatever the dropdown currently shows — the
+// operator changes the dropdown between attempts and the ledger above must
+// keep describing the run it is actually displaying.
+function runTax() {
+  const v = cfg.vendors.find(x => x.id === ctl.vendor);
+  return v ? v.tax_id : "";
 }
 
-// ------------------------------------------------------------------ poll
+function step(s, on) {
+  // What Limbo did with this call. Before it happens, the classifier map says
+  // what will happen; after, the server's own state says what did.
+  let tag = "";
+  if (on) {
+    const k = CLASS[s.tool] || "external";
+    if (s.status === "pending") {
+      tag = k === "external"
+        ? `<span class="tag">WILL HOLD</span>`
+        : `<span class="tag fwd">FORWARDS</span>`;
+    } else if (k === "internal") {
+      tag = `<span class="tag fwd">FORWARDED · IN TXN</span>`;
+    } else if (k === "verify") {
+      tag = s.status === "running" ? `<span class="tag ver">VERIFYING…</span>`
+          : s.status === "fail" ? `<span class="tag gone">422</span>`
+          : `<span class="tag ver">VERIFIED</span>`;
+    } else {
+      const held = limbo && limbo.held.some(h => h.tool === s.tool);
+      const sent = limbo && limbo.flushed.some(f => f.tool === s.tool);
+      tag = sent ? `<span class="tag sent">DELIVERED</span>`
+          : held ? `<span class="tag held">IN LIMBO</span>`
+          : limbo && limbo.outcome === "discarded"
+              ? `<span class="tag gone">DESTROYED UNSENT</span>`
+              : `<span class="tag held">HELD</span>`;
+    }
+  }
+  const out = s.status === "fail" ? reason(s.text)
+            : s.status === "ok" ? s.text : "";
+  // The agent thinks this step succeeded — it got a receipt. If Limbo then
+  // destroyed the effect, the row must not keep reading as a success, or the
+  // panel is telling the agent's story instead of the truth.
+  const voided = on && s.status === "ok" && limbo &&
+                 limbo.outcome === "discarded" &&
+                 (CLASS[s.tool] || "external") === "external";
+  return `
+    <div class="step ${s.status}${voided ? " voided" : ""}">
+      <div class="row1">
+        <span class="idx">${s.n}</span>
+        <span class="tool">${esc(s.tool)}</span>
+        <span class="tagr">${tag}</span>
+      </div>
+      <div class="tgt">${esc(s.detail || s.target)}</div>
+      ${out ? `<div class="out">${esc(out)}</div>` : ""}
+    </div>`;
+}
 
-async function poll() {
-  // Each source is independent: one dead process must not blank the others.
-  fetch(LIMBO + "/state").then(r => r.json()).then(renderLimbo).catch(() => {
-    $("p-off").textContent = "limbo unreachable on :8080";
-  });
-  for (const side of ["u", "p"]) {
-    inbox(side).then(m => renderInbox(side, m)).catch(() => {
-      $(side + "-off").textContent =
-        `mailpit unreachable (${MAIL[side].join(", ")}) — started with --api-cors "*"?`;
+function gate() {
+  if (!limbo) return `<div class="offline">limbo unreachable on :8080</div>`;
+  const v = limbo.verdict, o = limbo.outcome;
+  const failed = limbo.verdicts.find(x => !x.ok);
+
+  let cls = "pending", label = "AWAITING VERIFICATION", detail =
+    "The run has not been judged yet. Nothing can leave until it is.";
+  if (o === "committed") {
+    cls = "pass committed"; label = "COMMITTED";
+    detail = `${limbo.flushed.length} effects were released into the world. ` +
+             `The internal transaction is durable.`;
+  } else if (o === "discarded") {
+    cls = "fail discarded"; label = "DISCARDED";
+    detail = "Transaction rolled back and every held effect destroyed unsent. " +
+             "Nothing left the building.";
+  } else if (v === "fail") {
+    cls = "fail"; label = "VERIFICATION FAILED";
+    detail = failed ? reason(failed.detail) : "a tool call returned an error";
+  } else if (v === "pass") {
+    cls = "pass"; label = "VERIFIED";
+    detail = "The registry accepted this vendor. The run has earned a commit.";
+  }
+
+  const canCommit = v === "pass" && o === null && limbo.count > 0;
+  const canDiscard = o === null && limbo.count > 0;
+
+  // Once a run is terminal the gate is spent — replace the buttons with what
+  // happened rather than leaving two dead controls under a finished verdict.
+  const acts = o !== null
+    ? `<div class="spent">${o === "committed"
+        ? "released by human approval"
+        : "no approval was ever possible — the gate only opens on a pass"}</div>`
+    : `<div class="acts">
+        <button class="ctl approve" id="approve" ${canCommit ? "" : "disabled"}>
+          APPROVE &amp; COMMIT</button>
+        <button class="ctl discard" id="discardb" ${canDiscard ? "" : "disabled"}>
+          DISCARD</button>
+      </div>`;
+
+  return `
+    <div class="gate ${cls}">
+      <div class="body">
+        <div class="label">${label}
+          <span class="count">${limbo.count} IN LIMBO · ATTEMPT ${limbo.attempt}</span>
+        </div>
+        <div class="detail">${esc(detail)}</div>
+      </div>
+      ${acts}
+    </div>`;
+}
+
+// ------------------------------------------------------------------ right
+
+function renderRight(on) {
+  const side = on ? "protected" : "unprotected";
+  const msgs = mail[side] || [];
+  const w = worlds && worlds[side];
+  const rows = w ? w.vendors.length : "–";
+  const durable = w && !w.in_transaction ? rows : (w ? 0 : "–");
+
+  const R = $("right");
+  const prev = ctl.previous ? prevBlock(ctl.previous) : "";
+
+  R.innerHTML =
+    prev +
+    `<div class="secttl">THE WORLD <span class="n">${side}</span></div>
+     <div class="stats">
+       <div class="stat ${msgs.length ? (on ? "good" : "bad") : "zero"}">
+         <div class="k">DELIVERED</div>
+         <div class="v">${msgs.length}</div>
+         <div class="u">emails + channel posts that actually left</div>
+       </div>
+       <div class="stat ${durable ? "good" : "zero"}">
+         <div class="k">DURABLE ROWS</div>
+         <div class="v">${durable}</div>
+         <div class="u">${w && w.in_transaction
+            ? rows + " written, still inside an open transaction"
+            : "committed to the vendor database"}</div>
+       </div>
+     </div>` +
+    (mailErr[side] ? `<div class="offline">${esc(mailErr[side])}</div>` : "") +
+    (msgs.length
+      ? msgs.map(m => `
+        <div class="msg">
+          <div class="to">${esc((m.To[0] || {}).Address || "")}
+            <span class="box">· ${esc(m.box)}</span></div>
+          <div class="subj">${esc(m.Subject)}</div>
+          <div class="snip">${esc(m.Snippet)}</div>
+        </div>`).join("")
+      : on ? emptyProtected() : `<div class="nomail plain">no messages yet</div>`) +
+    (ctl.lines && ctl.lines.length
+      ? `<div class="secttl" style="margin-top:22px">AGENT OUTPUT</div>
+         <div class="out" id="agentout">${esc(ctl.lines.join("\n"))}</div>`
+      : "");
+
+  // The log pane is rebuilt on every poll, which resets its scroll. Keep it
+  // pinned to the newest line so a running agent's latest step is what's on
+  // screen, without a half-line clipped at the top.
+  const o = $("agentout");
+  if (o) o.scrollTop = o.scrollHeight;
+}
+
+// The run before this one, with what it cost. This block is the whole
+// comparison: the unprotected run's 3-delivered-1-row stays visible while the
+// protected run puts 0 and 0 up beside it.
+// An empty protected inbox means something different at each stage, and the
+// difference is the whole story: held is reversible, discarded is over.
+function emptyProtected() {
+  const o = limbo && limbo.outcome;
+  if (o === "discarded")
+    return `<div class="nomail"><b>NOTHING EVER LEFT</b>
+      every effect this run produced was destroyed unsent. There is no
+      retraction to send and no one to apologise to — from the outside world's
+      point of view the run never happened.</div>`;
+  if (limbo && limbo.count)
+    return `<div class="nomail"><b>NOTHING WAS SENT</b>
+      ${limbo.count} effects are held, not delivered — they exist only inside
+      Limbo and can still be taken back</div>`;
+  return `<div class="nomail plain">no messages yet</div>`;
+}
+
+function prevBlock(p) {
+  const failed = p.steps.filter(s => s.status === "fail").length;
+  const d = p.delivered, r = p.rows;
+  const num = (v, bad) =>
+    v === null || v === undefined ? `<span class="q">–</span>`
+    : `<span class="${v ? (bad ? "x" : "c") : "c"}">${v}</span>`;
+  return `
+    <div class="prev ${esc(p.mode)}">
+      <div class="hd">PREVIOUS RUN <span class="who">${esc(p.mode)} ·
+        ${esc(p.vendor)}</span></div>
+      <div class="line">
+        ${num(d, p.mode === "unprotected")} delivered ·
+        ${num(r, p.mode === "unprotected")} rows ·
+        ${failed ? `<span class="x">step ${
+            p.steps.findIndex(s => s.status === "fail") + 1} failed</span>`
+          : "no failures"}</div>
+      ${p.mode === "unprotected" && failed ? `<div class="line note">
+        steps 1–4 had already reached the world before step 5 revealed the
+        problem. Nothing could be taken back.</div>` : ""}
+    </div>`;
+}
+
+// ----------------------------------------------------------------- actions
+
+const post = async (base, path, body) => {
+  try {
+    const r = await fetch(base + path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: body === undefined ? "{}" : JSON.stringify(body),
     });
-  }
+    return r;
+  } catch (e) { return null; }
+};
+
+async function connect(id) {
+  $("menu").hidden = true;
+  await post(CTL, "/connect", { agent: id });
+  poll();
 }
 
-const act = path => async () => {
-  try { await fetch(LIMBO + path, { method: "POST" }); } catch (e) {}
+$("connect").onclick = e => {
+  e.stopPropagation();
+  $("menu").hidden = !$("menu").hidden;
+};
+document.addEventListener("click", () => { $("menu").hidden = true; });
+$("menu").onclick = e => e.stopPropagation();
+
+$("run").onclick = async () => {
+  busy = true; render();
+  await post(CTL, "/run", { vendor: $("vendor").value, live });
+  busy = false; poll();
+};
+
+$("protect").onclick = async () => {
+  // Toggle against server state, not the DOM attribute — render() rewrites
+  // that attribute on every poll, so reading it back races the poll.
+  const on = !(ctl && ctl.protected);
+  await post(CTL, "/protect", { on });
   poll();
 };
-$("p-approve").onclick = act("/commit");
-$("p-discard").onclick = act("/discard");
 
-poll();
-setInterval(poll, 500);
+$("live").onclick = () => { live = !live; render(); };
+
+$("reset").onclick = async () => { await post(CTL, "/reset"); poll(); };
+
+// The gate's buttons are re-rendered every poll, so bind by delegation.
+$("left").addEventListener("click", async e => {
+  const t = e.target;
+  if (t.id === "approve" && !t.disabled) { await post(LIMBO, "/commit"); poll(); }
+  if (t.id === "discardb" && !t.disabled) { await post(LIMBO, "/discard"); poll(); }
+});
+
+boot();
 </script>
