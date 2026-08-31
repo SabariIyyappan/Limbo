@@ -2,6 +2,21 @@
   <img src="titlecard-main.jpg" alt="LIMBO — the afterlife for agent side effects" width="820">
 </p>
 
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python">
+  <img src="https://img.shields.io/badge/MCP-Model_Context_Protocol-000000?style=for-the-badge" alt="MCP">
+  <img src="https://img.shields.io/badge/FastMCP-proxy-0A7E8C?style=for-the-badge" alt="FastMCP">
+  <img src="https://img.shields.io/badge/LangGraph-ReAct_agent-1C3C3C?style=for-the-badge&logo=langchain&logoColor=white" alt="LangGraph">
+  <img src="https://img.shields.io/badge/Groq-gpt--oss--120b-F55036?style=for-the-badge&logo=groq&logoColor=white" alt="Groq">
+</p>
+<p align="center">
+  <img src="https://img.shields.io/badge/FastAPI-0.115-009688?style=for-the-badge&logo=fastapi&logoColor=white" alt="FastAPI">
+  <img src="https://img.shields.io/badge/SQLite-explicit_transactions-003B57?style=for-the-badge&logo=sqlite&logoColor=white" alt="SQLite">
+  <img src="https://img.shields.io/badge/Mailpit-SMTP_capture-2E7D32?style=for-the-badge" alt="Mailpit">
+  <img src="https://img.shields.io/badge/Uvicorn-ASGI-499848?style=for-the-badge" alt="Uvicorn">
+  <img src="https://img.shields.io/badge/cost-%240_no_paid_services-2ea44f?style=for-the-badge" alt="No paid services">
+</p>
+
 ### `git commit` for agent actions
 
 Every mature system separates *doing* from *committing*. Agents don't. They
@@ -35,6 +50,38 @@ three people have already been told the vendor is approved.
 
 Run it unprotected and those three messages are gone. Run it through Limbo and
 they never left the building.
+
+---
+
+## The demo, in three frames
+
+**1 — A plain LangGraph agent, no staging layer.** It works through all five
+steps. Step 5 comes back `422 — entity status is INACTIVE`, and by then three
+emails have already been delivered and a row written. Nothing here is
+recoverable; the failure arrived after the damage.
+
+<p align="center">
+  <img src="docs/1-unprotected-agent.png" alt="Unprotected run: 3 delivered, step 5 fails with a 422" width="960">
+</p>
+
+**2 — The same agent, same tax ID, connected through Limbo.** Steps 2–4 never
+reach the world: they are held, and the agent gets a plausible receipt so it
+stays coherent. Step 5 still makes the real call and still gets the real 422 —
+and that failing verdict destroys the held effects on its own. **0 delivered,
+0 rows.** No human had to intervene to make the world safe.
+
+<p align="center">
+  <img src="docs/2-limbo-holds-and-discards.png" alt="Protected run: effects destroyed unsent, nothing ever left" width="960">
+</p>
+
+**3 — The operator corrects the tax ID and runs again.** Same agent, same
+prompt, same code path — only the input changed. The registry accepts
+`ACME-88-4418`, the verdict flips to `VERIFIED`, and the gate unlocks. One
+human approval releases all three effects at once and makes the row durable.
+
+<p align="center">
+  <img src="docs/3-limbo-verified-and-committed.png" alt="Verified run committed: 3 delivered, 1 durable row" width="960">
+</p>
 
 ---
 
