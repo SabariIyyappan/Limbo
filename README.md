@@ -14,7 +14,6 @@
   <img src="https://img.shields.io/badge/SQLite-explicit_transactions-003B57?style=for-the-badge&logo=sqlite&logoColor=white" alt="SQLite">
   <img src="https://img.shields.io/badge/Mailpit-SMTP_capture-2E7D32?style=for-the-badge" alt="Mailpit">
   <img src="https://img.shields.io/badge/Uvicorn-ASGI-499848?style=for-the-badge" alt="Uvicorn">
-  <img src="https://img.shields.io/badge/cost-%240_no_paid_services-2ea44f?style=for-the-badge" alt="No paid services">
 </p>
 
 ### `git commit` for agent actions
@@ -244,12 +243,6 @@ truncated run is never recorded either way.
   the prompt names the five steps, so the agent executes an onboarding rather
   than planning one. Every tool call in a run is one the model chose; nothing
   fabricates a step.
-
-## Stack
-
-LangGraph (`create_react_agent`) · MCP over streamable HTTP · FastMCP proxy ·
-Groq `openai/gpt-oss-120b` · SQLite with explicit transaction control · Mailpit
-· FastAPI. No paid services.
 
 ## Layout
 
